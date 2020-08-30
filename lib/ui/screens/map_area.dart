@@ -200,6 +200,8 @@ class _MapAreaState extends State<MapArea> {
                             setState(() {
                               isLoading = true;
                               isSelectingDestination = false;
+                              isShowPinMarker = false;
+                              deleteMarkerById("pinMarker");
                               setDestinationMarker();
                               setPolylineOrder();
                             });
@@ -227,6 +229,10 @@ class _MapAreaState extends State<MapArea> {
     );
   }
 
+  deleteMarkerById(String id) {
+    _markers.removeWhere((m) => m.markerId.value == id);
+  }
+
   moveToCurrentLocation({LocationData locationData}) async {
     if(currentLocation == null) currentLocation = await location.getLocation();
 
@@ -242,7 +248,7 @@ class _MapAreaState extends State<MapArea> {
     if(isShowPinMarker) {
       setState(() {
         var pinPosition = LatLng(locationData.latitude, locationData.longitude);
-        _markers.removeWhere((m) => m.markerId.value == "pinMarker");
+        deleteMarkerById("pinMarker");
         _markers.add(Marker(
           markerId: MarkerId("pinMarker"),
           position: pinPosition,

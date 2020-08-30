@@ -5,6 +5,7 @@ import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:location/location.dart';
 import 'package:ojol_customer_app/helper/general_helper.dart';
+import 'package:geocoder/geocoder.dart';
 
 const double CAMERA_ZOOM = 16;
 const double CAMERA_TILT = 80;
@@ -27,14 +28,24 @@ class _MapAreaState extends State<MapArea> {
 
   // for my custom marker pins
   BitmapDescriptor driverIcon;
-  BitmapDescriptor startLocationIcon;
-  BitmapDescriptor destinationIcon;
+  BitmapDescriptor originLocationIcon;
+  BitmapDescriptor destinationLocationIcon;
   BitmapDescriptor pinMarkerIcon;
+
+  bool isShowPinMarker = false;
   
   Location location = Location();
   LocationData currentLocation;
+
   LocationData originLocation;
+  String originAddress;
+  bool isOriginSearchingAddress = false;
+  bool isSelectingOrigin = false;
+
   LocationData destinationLocation;
+  String destinationAddress;
+  bool isDestinationSearchingAddress = false;
+  bool isSelectingDestination = false;
 
   @override
   void initState() {
@@ -47,19 +58,12 @@ class _MapAreaState extends State<MapArea> {
   void setInitialLocation() async {
     currentLocation = await location.getLocation();
     originLocation = await location.getLocation();
-    // destinationLocation = LocationData.fromMap({
-    //   "latitude": DEST_LOCATION.latitude,
-    //   "longitude": DEST_LOCATION.longitude
-    // });
   }
 
   void setMarkerIcon() async {
     driverIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_driver.png", 100);
-  
-    startLocationIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_start.png", 100);
-    
-    destinationIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_destination.png", 100);
-    
+    originLocationIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_start.png", 100);
+    destinationLocationIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_destination.png", 100);
     pinMarkerIcon = await getBitmapDescriptorFromAssetBytes("assets/marker_pin.png", 100);
   }
   
@@ -84,7 +88,11 @@ class _MapAreaState extends State<MapArea> {
                 children: [
                   Icon(Icons.place, size: 16, color: Colors.grey),
                   SizedBox(width: 8),
-                  Text("Lokasi kamu sekarang"),
+                  isOriginSearchingAddress 
+                    ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
+                    : (originLocation != null 
+                      ? Expanded(child: Text(originAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
+                      : Text("Cari lokasi jemput", style: TextStyle(color: Colors.grey)))
                 ],
               ),
             ),
@@ -96,7 +104,11 @@ class _MapAreaState extends State<MapArea> {
                 children: [
                   Icon(Icons.place, size: 16, color: Colors.green),
                   SizedBox(width: 8),
-                  destinationLocation != null ? Text("Lokasi Antar") : Text("Cari lokasi tujuan", style: TextStyle(color: Colors.grey)),
+                  isDestinationSearchingAddress 
+                    ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
+                    : (destinationLocation != null 
+                      ? Expanded(child: Text(destinationAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
+                      : Text("Cari lokasi tujuan", style: TextStyle(color: Colors.grey)))
                 ],
               ),
             ),
@@ -119,51 +131,150 @@ class _MapAreaState extends State<MapArea> {
                     markers: _markers,
                     tiltGesturesEnabled: true,
                     polylines: _polylines,
+                    myLocationEnabled: true,
                     onMapCreated: (GoogleMapController controller) {
                       _controller.complete(controller);
-                      // setDriverMarker();
+                      moveToCurrentLocation();
                     },
-                    onCameraMove: (position) {
-                      print(position.target.latitude);
-                      print(position.target.longitude);
+                    onCameraIdle: () async {
+                      if(isSelectingOrigin) {
+                        originAddress = await getCurrentAddress();
+                        originLocation = LocationData.fromMap({
+                          "latitude": currentLocation.latitude,
+                          "longitude": currentLocation.longitude
+                        });
+                      }
+                      if(isSelectingDestination) {
+                        destinationAddress = await getCurrentAddress();
+                        destinationLocation = LocationData.fromMap({
+                          "latitude": currentLocation.latitude,
+                          "longitude": currentLocation.longitude
+                        });
+                      }
+                      setState(() {
+                        isOriginSearchingAddress= false;
+                        isDestinationSearchingAddress = false;
+                      });
+                    },
+                    onCameraMoveStarted: () {
+                      setState(() {
+                        if(isSelectingOrigin) isOriginSearchingAddress = true;
+                        if(isSelectingDestination) isDestinationSearchingAddress = true;
+                      });
+                    },
+                    onCameraMove: (CameraPosition position) {
+                      if(isShowPinMarker) {
+                        setState(() {
+                          currentLocation = LocationData.fromMap({
+                            "latitude": position.target.latitude,
+                            "longitude": position.target.longitude
+                          });
+                          var pinPosition = LatLng(position.target.latitude, position.target.longitude);
+                          _markers.removeWhere((m) => m.markerId.value == "pinMarker");
+                          _markers.add(Marker(
+                            markerId: MarkerId("pinMarker"),
+                            position: pinPosition,
+                            icon: pinMarkerIcon
+                          ));
+                        });
+                      }
                     },
                   ),
+                  Positioned(
+                    bottom: 0,
+                    child: Container(
+                      width: MediaQuery.of(context).size.width,
+                      color: Colors.white,
+                      padding: EdgeInsets.all(8),
+                      child: isSelectingOrigin || isSelectingDestination ? RaisedButton(
+                        onPressed: () {
+                          if(isSelectingOrigin) {
+                            setState(() {
+                              isSelectingOrigin = false;
+                              isSelectingDestination = true;
+                              setOriginMarker();
+                            });
+                          } else if(isSelectingDestination) {
+                            setState(() {
+                              isSelectingDestination = false;
+                              setDestinationMarker();
+                            });
+                          }
+                        },
+                        color: Colors.orange,
+                        textColor: Colors.white,
+                        elevation: 0,
+                        child: Text(isSelectingOrigin ? "SET LOKASI JEMPUT" : "SET LOKASI ANTAR"),
+                      ) : RaisedButton(
+                        onPressed: () => setState(() {
+                          isSelectingOrigin = true;
+                          isShowPinMarker = true;
+                          moveToCurrentLocation();
+                        }),
+                        color: Colors.blue,
+                        textColor: Colors.white,
+                        elevation: 0,
+                        child: Text("BUAT ORDER BARU"),
+                      ),
+                    )
+                  )
                 ],
               ),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => moveToCurrentLocation(),
-        mini: true,
-        backgroundColor: Colors.white,
-        child: Icon(Icons.my_location, color: Colors.blue),
-        elevation: 1,
-      ),
+      )
     );
   }
 
-  moveToCurrentLocation() async {
+  moveToCurrentLocation({LocationData locationData}) async {
     currentLocation = await location.getLocation();
+
+    if(locationData == null) locationData = currentLocation;
     CameraPosition cPosition = CameraPosition(
       zoom: CAMERA_ZOOM,
-      target: LatLng(currentLocation.latitude, currentLocation.longitude),
+      target: LatLng(locationData.latitude, locationData.longitude),
     );
 
     final GoogleMapController controller = await _controller.future;
     controller.animateCamera(CameraUpdate.newCameraPosition(cPosition));
 
-    setState(() {
-      var pinPosition = LatLng(currentLocation.latitude, currentLocation.longitude);
-      _markers.removeWhere((m) => m.markerId.value == "pinMarker");
-      _markers.add(Marker(
-        markerId: MarkerId("pinMarker"),
-        anchor: Offset(0,0),
-        position: pinPosition,
-        icon: pinMarkerIcon
-      ));
-    });
+    if(isShowPinMarker) {
+      setState(() {
+        var pinPosition = LatLng(locationData.latitude, locationData.longitude);
+        _markers.removeWhere((m) => m.markerId.value == "pinMarker");
+        _markers.add(Marker(
+          markerId: MarkerId("pinMarker"),
+          position: pinPosition,
+          icon: pinMarkerIcon
+        ));
+      });
+    }
+  }
+
+  Future<String> getCurrentAddress() async {
+    final coordinates = new Coordinates(currentLocation.latitude, currentLocation.longitude);
+    var addresses = await Geocoder.local.findAddressesFromCoordinates(coordinates);
+    var first = addresses.first;
+    return first.addressLine;
+  }
+
+  void setOriginMarker() async {
+    _markers.removeWhere((m) => m.markerId.value == "originMarker");
+    _markers.add(Marker(
+      markerId: MarkerId("originMarker"),
+      position: LatLng(currentLocation.latitude, currentLocation.longitude),
+      icon: originLocationIcon
+    ));
+  }
+  
+  void setDestinationMarker() async {
+    _markers.removeWhere((m) => m.markerId.value == "destinationMarker");
+    _markers.add(Marker(
+      markerId: MarkerId("destinationMarker"),
+      position: LatLng(currentLocation.latitude, currentLocation.longitude),
+      icon: destinationLocationIcon
+    ));
   }
 
 }

@@ -21,7 +21,7 @@ class _MapAreaState extends State<MapArea> {
 
   Completer<GoogleMapController> _controller = Completer();
   Set<Marker> _markers = Set<Marker>();
-  Set<Polyline> _polylines = Set<Polyline>();
+  Set<Polyline> polylines = Set<Polyline>();
   List<LatLng> polylineCoordinates = [];
   PolylinePoints polylinePoints = PolylinePoints();
   String googleAPIKey = "AIzaSyCbEHsXGfuijWMzS2YxPk8Tls8BdqWVwaA";
@@ -37,15 +37,17 @@ class _MapAreaState extends State<MapArea> {
   Location location = Location();
   LocationData currentLocation;
 
-  LocationData originLocation;
+  LocationData originLatLng;
   String originAddress;
   bool isOriginSearchingAddress = false;
   bool isSelectingOrigin = false;
 
-  LocationData destinationLocation;
+  LocationData destinationLatLng;
   String destinationAddress;
   bool isDestinationSearchingAddress = false;
   bool isSelectingDestination = false;
+
+  bool isLoading = false;
 
   @override
   void initState() {
@@ -57,7 +59,7 @@ class _MapAreaState extends State<MapArea> {
   
   void setInitialLocation() async {
     currentLocation = await location.getLocation();
-    originLocation = await location.getLocation();
+    originLatLng = await location.getLocation();
   }
 
   void setMarkerIcon() async {
@@ -90,7 +92,7 @@ class _MapAreaState extends State<MapArea> {
                   SizedBox(width: 8),
                   isOriginSearchingAddress 
                     ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
-                    : (originLocation != null 
+                    : (originLatLng != null 
                       ? Expanded(child: Text(originAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
                       : Text("Cari lokasi jemput", style: TextStyle(color: Colors.grey)))
                 ],
@@ -106,7 +108,7 @@ class _MapAreaState extends State<MapArea> {
                   SizedBox(width: 8),
                   isDestinationSearchingAddress 
                     ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
-                    : (destinationLocation != null 
+                    : (destinationLatLng != null 
                       ? Expanded(child: Text(destinationAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
                       : Text("Cari lokasi tujuan", style: TextStyle(color: Colors.grey)))
                 ],
@@ -130,7 +132,7 @@ class _MapAreaState extends State<MapArea> {
                     initialCameraPosition: initialCameraPosition,
                     markers: _markers,
                     tiltGesturesEnabled: true,
-                    polylines: _polylines,
+                    polylines: polylines,
                     myLocationEnabled: true,
                     onMapCreated: (GoogleMapController controller) {
                       _controller.complete(controller);
@@ -139,14 +141,14 @@ class _MapAreaState extends State<MapArea> {
                     onCameraIdle: () async {
                       if(isSelectingOrigin) {
                         originAddress = await getCurrentAddress();
-                        originLocation = LocationData.fromMap({
+                        originLatLng = LocationData.fromMap({
                           "latitude": currentLocation.latitude,
                           "longitude": currentLocation.longitude
                         });
                       }
                       if(isSelectingDestination) {
                         destinationAddress = await getCurrentAddress();
-                        destinationLocation = LocationData.fromMap({
+                        destinationLatLng = LocationData.fromMap({
                           "latitude": currentLocation.latitude,
                           "longitude": currentLocation.longitude
                         });
@@ -196,8 +198,10 @@ class _MapAreaState extends State<MapArea> {
                             });
                           } else if(isSelectingDestination) {
                             setState(() {
+                              isLoading = true;
                               isSelectingDestination = false;
                               setDestinationMarker();
+                              setPolylineOrder();
                             });
                           }
                         },
@@ -206,11 +210,7 @@ class _MapAreaState extends State<MapArea> {
                         elevation: 0,
                         child: Text(isSelectingOrigin ? "SET LOKASI JEMPUT" : "SET LOKASI ANTAR"),
                       ) : RaisedButton(
-                        onPressed: () => setState(() {
-                          isSelectingOrigin = true;
-                          isShowPinMarker = true;
-                          moveToCurrentLocation();
-                        }),
+                        onPressed: () => createNewOrder(),
                         color: Colors.blue,
                         textColor: Colors.white,
                         elevation: 0,
@@ -228,7 +228,7 @@ class _MapAreaState extends State<MapArea> {
   }
 
   moveToCurrentLocation({LocationData locationData}) async {
-    currentLocation = await location.getLocation();
+    if(currentLocation == null) currentLocation = await location.getLocation();
 
     if(locationData == null) locationData = currentLocation;
     CameraPosition cPosition = CameraPosition(
@@ -263,7 +263,7 @@ class _MapAreaState extends State<MapArea> {
     _markers.removeWhere((m) => m.markerId.value == "originMarker");
     _markers.add(Marker(
       markerId: MarkerId("originMarker"),
-      position: LatLng(currentLocation.latitude, currentLocation.longitude),
+      position: LatLng(originLatLng.latitude, originLatLng.longitude),
       icon: originLocationIcon
     ));
   }
@@ -272,9 +272,48 @@ class _MapAreaState extends State<MapArea> {
     _markers.removeWhere((m) => m.markerId.value == "destinationMarker");
     _markers.add(Marker(
       markerId: MarkerId("destinationMarker"),
-      position: LatLng(currentLocation.latitude, currentLocation.longitude),
+      position: LatLng(destinationLatLng.latitude, destinationLatLng.longitude),
       icon: destinationLocationIcon
     ));
+  }
+
+  void setPolylineOrder() async {
+    PolylineResult result = await polylinePoints.getRouteBetweenCoordinates(
+      googleAPIKey,
+      PointLatLng(originLatLng.latitude, originLatLng.longitude),
+      PointLatLng(destinationLatLng.latitude, destinationLatLng.longitude)
+    );
+
+    polylineCoordinates.clear();
+    polylines.removeWhere((p) => p.polylineId.value == "orderRoute");
+    if(result.points.isNotEmpty){
+      result.points.forEach((PointLatLng point){
+        polylineCoordinates.add(LatLng(point.latitude,point.longitude));
+      });
+      polylines.add(Polyline(
+        width: 5,
+        polylineId: PolylineId("orderRoute"),
+        color: Color.fromARGB(255, 40, 122, 198), 
+        points: polylineCoordinates
+      ));
+    }
+    setState(() {});
+  }
+
+  void createNewOrder() async {
+    originAddress = await getCurrentAddress();
+    originLatLng = LocationData.fromMap({
+      "latitude": currentLocation.latitude,
+      "longitude": currentLocation.longitude
+    });
+    destinationLatLng = null;
+    destinationAddress = null;
+    polylines.clear();
+    _markers.removeWhere((m) => m.markerId.value == "originMarker");
+    _markers.removeWhere((m) => m.markerId.value == "destinationMarker");
+    isSelectingOrigin = true;
+    isShowPinMarker = true;
+    moveToCurrentLocation();
   }
 
 }

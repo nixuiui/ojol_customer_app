@@ -2,10 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:geolocator/geolocator.dart';
+// import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:indonesia/indonesia.dart';
 import 'package:location/location.dart';
 import 'package:ojol_customer_app/helper/general_helper.dart';
 import 'package:geocoder/geocoder.dart';
+import 'package:ojol_customer_app/ui/screens/search_location_page.dart';
+import 'package:search_map_place/search_map_place.dart';
 
 const double CAMERA_ZOOM = 16;
 const double CAMERA_TILT = 80;
@@ -32,7 +37,11 @@ class _MapAreaState extends State<MapArea> {
   BitmapDescriptor destinationLocationIcon;
   BitmapDescriptor pinMarkerIcon;
 
+  double distance = 0;
+  int cost = 0;
   bool isShowPinMarker = false;
+  bool isReadyToCreateNewOrder = true;
+  bool isReviewRouteBeforeOrder = false;
   
   Location location = Location();
   LocationData currentLocation;
@@ -53,7 +62,6 @@ class _MapAreaState extends State<MapArea> {
   void initState() {
     super.initState();
     setMarkerIcon();
-    location.changeSettings(accuracy: LocationAccuracy.high);
     setInitialLocation();
   }
   
@@ -83,49 +91,9 @@ class _MapAreaState extends State<MapArea> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: EdgeInsets.all(16),
-              color: Colors.white,
-              child: Row(
-                children: [
-                  Icon(Icons.place, size: 16, color: Colors.grey),
-                  SizedBox(width: 8),
-                  isOriginSearchingAddress 
-                    ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
-                    : (originLatLng != null 
-                      ? Expanded(child: Text(originAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
-                      : Text("Cari lokasi jemput", style: TextStyle(color: Colors.grey)))
-                ],
-              ),
-            ),
-            Divider(height: 0),
-            Container(
-              padding: EdgeInsets.all(16),
-              color: Colors.white,
-              child: Row(
-                children: [
-                  Icon(Icons.place, size: 16, color: Colors.green),
-                  SizedBox(width: 8),
-                  isDestinationSearchingAddress 
-                    ? Text("Mencari Lokasi ...", style: TextStyle(color: Colors.grey))
-                    : (destinationLatLng != null 
-                      ? Expanded(child: Text(destinationAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis)) 
-                      : Text("Cari lokasi tujuan", style: TextStyle(color: Colors.grey)))
-                ],
-              ),
-            ),
             Expanded(
               child: Stack(
                 children: [
-                  Positioned(
-                    top: 20,
-                    right: 20,
-                    child: FloatingActionButton(
-                      onPressed: (){},
-                      mini: true,
-                      child: Icon(Icons.my_location),
-                    )
-                  ),
                   GoogleMap(
                     mapType: MapType.normal,
                     zoomControlsEnabled: false,
@@ -139,6 +107,7 @@ class _MapAreaState extends State<MapArea> {
                       moveToCurrentLocation();
                     },
                     onCameraIdle: () async {
+                      print("CAMERA IDLE");
                       if(isSelectingOrigin) {
                         originAddress = await getCurrentAddress();
                         originLatLng = LocationData.fromMap({
@@ -165,31 +134,45 @@ class _MapAreaState extends State<MapArea> {
                       });
                     },
                     onCameraMove: (CameraPosition position) {
+                      currentLocation = LocationData.fromMap({
+                        "latitude": position.target.latitude,
+                        "longitude": position.target.longitude
+                      });
                       if(isShowPinMarker) {
-                        setState(() {
-                          currentLocation = LocationData.fromMap({
-                            "latitude": position.target.latitude,
-                            "longitude": position.target.longitude
-                          });
-                          var pinPosition = LatLng(position.target.latitude, position.target.longitude);
-                          _markers.removeWhere((m) => m.markerId.value == "pinMarker");
-                          _markers.add(Marker(
-                            markerId: MarkerId("pinMarker"),
-                            position: pinPosition,
-                            icon: pinMarkerIcon
-                          ));
-                        });
+                        var pinPosition = LatLng(position.target.latitude, position.target.longitude);
+                        _markers.removeWhere((m) => m.markerId.value == "pinMarker");
+                        _markers.add(Marker(
+                          markerId: MarkerId("pinMarker"),
+                          position: pinPosition,
+                          icon: pinMarkerIcon
+                        ));
                       }
+                      setState(() {});
                     },
                   ),
-                  Positioned(
+                  isSelectingOrigin || isSelectingDestination ? Container(
+                    padding: EdgeInsets.all(16),
+                    width: MediaQuery.of(context).size.width,
+                    child: SearchMapPlaceWidget(
+                      apiKey: googleAPIKey,
+                      onSelected: (Place place) async {
+                        final geolocation = await place.geolocation;
+                        currentLocation = LocationData.fromMap({
+                          "latitude": geolocation.coordinates.latitude,
+                          "longitude": geolocation.coordinates.longitude
+                        });
+                        moveToCurrentLocation();
+                      },
+                    ),
+                  ) : Container(),
+                  isSelectingOrigin || isSelectingDestination ? Positioned(
                     bottom: 0,
                     child: Container(
                       width: MediaQuery.of(context).size.width,
                       color: Colors.white,
                       padding: EdgeInsets.all(8),
-                      child: isSelectingOrigin || isSelectingDestination ? RaisedButton(
-                        onPressed: () {
+                      child: RaisedButton(
+                        onPressed: () async {
                           if(isSelectingOrigin) {
                             setState(() {
                               isSelectingOrigin = false;
@@ -197,10 +180,13 @@ class _MapAreaState extends State<MapArea> {
                               setOriginMarker();
                             });
                           } else if(isSelectingDestination) {
+                            distance = await countDistance();
+                            cost = await countCost();
                             setState(() {
                               isLoading = true;
                               isSelectingDestination = false;
                               isShowPinMarker = false;
+                              isReviewRouteBeforeOrder = true;
                               deleteMarkerById("pinMarker");
                               setDestinationMarker();
                               setPolylineOrder();
@@ -211,7 +197,16 @@ class _MapAreaState extends State<MapArea> {
                         textColor: Colors.white,
                         elevation: 0,
                         child: Text(isSelectingOrigin ? "SET LOKASI JEMPUT" : "SET LOKASI ANTAR"),
-                      ) : RaisedButton(
+                      ),
+                    )
+                  ) : Container(),
+                  isReadyToCreateNewOrder ? Positioned(
+                    bottom: 0,
+                    child: Container(
+                      width: MediaQuery.of(context).size.width,
+                      color: Colors.white,
+                      padding: EdgeInsets.all(8),
+                      child: RaisedButton(
                         onPressed: () => createNewOrder(),
                         color: Colors.blue,
                         textColor: Colors.white,
@@ -219,7 +214,68 @@ class _MapAreaState extends State<MapArea> {
                         child: Text("BUAT ORDER BARU"),
                       ),
                     )
-                  )
+                  ) : Container(),
+                  isReviewRouteBeforeOrder ? Positioned(
+                    bottom: 0,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Padding(
+                          padding: EdgeInsets.all(16),
+                          child: FloatingActionButton(
+                            onPressed: () => cancelOrder(), 
+                            child: Icon(Icons.close, color: Colors.black),
+                            mini: true,
+                            backgroundColor: Colors.white,
+                            elevation: 1,
+                          ),
+                        ),
+                        Container(
+                          width: MediaQuery.of(context).size.width,
+                          padding: EdgeInsets.all(16),
+                          color: Colors.white,
+                          child: Row(
+                            children: [
+                              Icon(Icons.place, size: 16, color: Colors.grey),
+                              SizedBox(width: 8),
+                              Expanded(child: Text(originAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis))
+                            ],
+                          ),
+                        ),
+                        Divider(height: 0),
+                        Container(
+                          width: MediaQuery.of(context).size.width,
+                          padding: EdgeInsets.all(16),
+                          color: Colors.white,
+                          child: Row(
+                            children: [
+                              Icon(Icons.place, size: 16, color: Colors.green),
+                              SizedBox(width: 8),
+                              Expanded(child: Text(destinationAddress ?? "", maxLines: 1, overflow: TextOverflow.ellipsis))
+                            ],
+                          ),
+                        ),
+                        Container(
+                          width: MediaQuery.of(context).size.width,
+                          color: Colors.white,
+                          padding: EdgeInsets.all(8),
+                          child: RaisedButton(
+                            onPressed: () => createNewOrder(),
+                            color: Colors.green,
+                            textColor: Colors.white,
+                            elevation: 0,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text("ORDER (${distance.toStringAsFixed(1)} Km)"),
+                                Text(rupiah(cost)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  ) : Container()
                 ],
               ),
             ),
@@ -314,12 +370,60 @@ class _MapAreaState extends State<MapArea> {
     });
     destinationLatLng = null;
     destinationAddress = null;
+    isReadyToCreateNewOrder = false;
     polylines.clear();
     _markers.removeWhere((m) => m.markerId.value == "originMarker");
     _markers.removeWhere((m) => m.markerId.value == "destinationMarker");
     isSelectingOrigin = true;
     isShowPinMarker = true;
     moveToCurrentLocation();
+  }
+
+  searchAddress() async {
+    Map results = await Navigator.push(context, MaterialPageRoute(builder: (context) => SearchLocationPage()));
+
+    if (results != null && results.containsKey("location")) {
+      currentLocation = results["location"];
+      moveToCurrentLocation();
+    }
+  }
+
+  countDistance() async {
+    double distance = await Geolocator().distanceBetween(
+      originLatLng.latitude,
+      originLatLng.longitude,
+      destinationLatLng.latitude,
+      destinationLatLng.longitude,
+    );
+    return distance/1000;
+  }
+  
+  countCost() async {
+    int cost = 9000;
+    double distance = await countDistance();
+    if(distance > 5){
+      print(distance);
+      print(distance.ceil());
+      int additionalCost = (distance.round() - 5)*3000;
+      cost += additionalCost;
+    }
+    return cost;
+  }
+
+  cancelOrder() {
+    setState(() {
+      originAddress = null;
+      originLatLng = null;
+      destinationLatLng = null;
+      destinationAddress = null;
+      isReviewRouteBeforeOrder = false;
+      isReadyToCreateNewOrder = true;
+      polylines.clear();
+      _markers.removeWhere((m) => m.markerId.value == "originMarker");
+      _markers.removeWhere((m) => m.markerId.value == "destinationMarker");
+      isSelectingOrigin = false;
+      isShowPinMarker = false;
+    });
   }
 
 }
